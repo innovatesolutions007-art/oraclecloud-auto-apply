@@ -57,54 +57,44 @@ jobs:
           chmod 600 ~/.oci/config
           oci iam region list --output table
 
-      - name: Grab or Scale A1 Instance
+      - name: Check and Create A1 Instance
         env:
           OCI_COMPARTMENT_ID: ${{ secrets.OCI_COMPARTMENT_ID }}
           OCI_SUBNET_ID: ${{ secrets.OCI_SUBNET_ID }}
-          OCI_AVAILABILITY_DOMAIN: ${{ secrets.OCI_AVAILABILITY_DOMAIN }}
           OCI_IMAGE_ID: ${{ secrets.OCI_IMAGE_ID }}
           OCI_SSH_PUBLIC_KEY: ${{ secrets.OCI_SSH_PUBLIC_KEY }}
         run: |
           set +e
 
-          TARGET_OCPUS=4
-          TARGET_MEMORY=24
-          SCALE_OCPUS=(1 2 4)
-          SCALE_MEMORY=(6 12 24)
+          echo "=== 检查现有 A1 实例（4核/24GB）==="
 
-          echo "=== 检查现有 A1 实例 ==="
+          ALL_A1=$(oci compute instance list \
+            --compartment-id "$OCI_COMPARTMENT_ID" \
+            --lifecycle-state "RUNNING" \
+            --all \
+            2>&1)
 
-          INSTANCE_ID=""
-          INSTANCE_STATE=""
+          COUNT=$(echo "$ALL_A1" | jq '[.data[] | select(.shape == "VM.Standard.A1.Flex") | select(."shape-config".ocpus >= 4)] | length' 2>/dev/null)
 
-          for STATE_FILTER in RUNNING STOPPED; do
-            RESULT=$(oci compute instance list \
-              --compartment-id "$OCI_COMPARTMENT_ID" \
-              --availability-domain "$OCI_AVAILABILITY_DOMAIN" \
-              --lifecycle-state "$STATE_FILTER" \
-              --query "data[?shape=='VM.Standard.A1.Flex']" \
-              2>&1)
-            ID=$(echo "$RESULT" | jq -r '.[0].id // empty' 2>/dev/null)
-            if [ -n "$ID" ]; then
-              INSTANCE_ID="$ID"
-              INSTANCE_STATE="$STATE_FILTER"
-              echo "发现 ${STATE_FILTER} 状态的 A1 实例: $INSTANCE_ID"
-              break
-            fi
-          done
+          if [ "$COUNT" -gt "0" ] 2>/dev/null; then
+            echo "已有正确配置的 A1 实例（4核以上）在运行，无需创建。"
+            exit 0
+          fi
 
-          if [ -z "$INSTANCE_ID" ]; then
-            echo "=== 无现有 A1 实例，尝试创建 ==="
-            echo "尝试创建 ${SCALE_OCPUS[0]}C / ${SCALE_MEMORY[0]}G 实例..."
+          echo "未发现符合条件的 A1 实例，开始尝试三个 AD..."
 
-            SSH_KEY=$(echo "$OCI_SSH_PUBLIC_KEY" | tr -d '\n\r')
-            METADATA_JSON="{\"ssh_authorized_keys\": \"${SSH_KEY}\"}"
+          SSH_KEY=$(echo "$OCI_SSH_PUBLIC_KEY" | tr -d '\n\r')
+          METADATA_JSON="{\"ssh_authorized_keys\": \"${SSH_KEY}\"}"
+
+          try_create() {
+            local AD="$1"
+            echo "--- 尝试 AD: $AD ---"
 
             CREATE_RESULT=$(oci compute instance launch \
               --compartment-id "$OCI_COMPARTMENT_ID" \
-              --availability-domain "$OCI_AVAILABILITY_DOMAIN" \
+              --availability-domain "$AD" \
               --shape "VM.Standard.A1.Flex" \
-              --shape-config "{\"ocpus\": ${SCALE_OCPUS[0]}, \"memoryInGBs\": ${SCALE_MEMORY[0]}}" \
+              --shape-config '{"ocpus": 4, "memory-in-gbs": 24}' \
               --image-id "$OCI_IMAGE_ID" \
               --subnet-id "$OCI_SUBNET_ID" \
               --assign-public-ip true \
@@ -112,90 +102,27 @@ jobs:
               --display-name "A1-Auto-Grabbed" \
               2>&1)
 
-            HTTP_STATUS=$(echo "$CREATE_RESULT" | jq -r '.data["lifecycle-state"] // empty' 2>/dev/null)
+            LIFECYCLE=$(echo "$CREATE_RESULT" | jq -r '.data["lifecycle-state"] // empty' 2>/dev/null)
 
-            if [ -n "$HTTP_STATUS" ]; then
-              echo "实例创建成功! 状态: $HTTP_STATUS"
-              echo "本次创建完成，等待下次运行再扩容。"
-              exit 0
+            if [ -n "$LIFECYCLE" ]; then
+              INSTANCE_ID=$(echo "$CREATE_RESULT" | jq -r '.data.id' 2>/dev/null)
+              echo "✅ 实例创建成功！AD: $AD"
+              echo "ID: $INSTANCE_ID"
+              echo "状态: $LIFECYCLE"
+              return 0
             else
               ERROR_CODE=$(echo "$CREATE_RESULT" | jq -r '.code // empty' 2>/dev/null)
               ERROR_MSG=$(echo "$CREATE_RESULT" | jq -r '.message // empty' 2>/dev/null)
-              echo "创建失败: $ERROR_CODE - $ERROR_MSG"
-              echo "下次运行将重试。"
-              exit 0
+              echo "❌ AD $AD 失败"
+              echo "错误码: $ERROR_CODE"
+              echo "原因: $ERROR_MSG"
+              return 1
             fi
-          fi
+          }
 
-          echo "=== 检查实例当前配置 ==="
-          CURRENT_CONFIG=$(oci compute instance get \
-            --instance-id "$INSTANCE_ID" \
-            --query 'data."shape-config"' \
-            2>&1)
+          try_create "AinZ:US-ASHBURN-AD-1" && exit 0
+          try_create "AinZ:US-ASHBURN-AD-2" && exit 0
+          try_create "AinZ:US-ASHBURN-AD-3" && exit 0
 
-          CURRENT_OCPUS=$(echo "$CURRENT_CONFIG" | jq -r '.ocpus // 0' 2>/dev/null)
-          CURRENT_MEMORY=$(echo "$CURRENT_CONFIG" | jq -r '."memory-in-gbs" // 0' 2>/dev/null)
-          CURRENT_OCPUS=${CURRENT_OCPUS%.*}
-          CURRENT_MEMORY=${CURRENT_MEMORY%.*}
-
-          echo "当前配置: ${CURRENT_OCPUS}C / ${CURRENT_MEMORY}G"
-          echo "目标配置: ${TARGET_OCPUS}C / ${TARGET_MEMORY}G"
-
-          if [ "$CURRENT_OCPUS" -ge "$TARGET_OCPUS" ] 2>/dev/null; then
-            echo "已达到目标配置 4C/24G，无需扩容。"
-            if [ "$INSTANCE_STATE" = "STOPPED" ]; then
-              echo "实例处于停止状态，启动实例..."
-              oci compute instance action --instance-id "$INSTANCE_ID" --action START 2>&1
-            fi
-            exit 0
-          fi
-
-          NEXT_OCPUS=$TARGET_OCPUS
-          NEXT_MEMORY=$TARGET_MEMORY
-          for i in "${!SCALE_OCPUS[@]}"; do
-            if [ "${SCALE_OCPUS[$i]}" -gt "$CURRENT_OCPUS" ] 2>/dev/null; then
-              NEXT_OCPUS=${SCALE_OCPUS[$i]}
-              NEXT_MEMORY=${SCALE_MEMORY[$i]}
-              break
-            fi
-          done
-
-          echo "=== 尝试扩容到 ${NEXT_OCPUS}C / ${NEXT_MEMORY}G ==="
-
-          if [ "$INSTANCE_STATE" = "RUNNING" ]; then
-            echo "停止实例以进行扩容..."
-            oci compute instance action --instance-id "$INSTANCE_ID" --action SOFTSTOP 2>&1
-            echo "等待实例停止..."
-            sleep 60
-            for i in $(seq 1 10); do
-              STATE=$(oci compute instance get \
-                --instance-id "$INSTANCE_ID" \
-                --query 'data."lifecycle-state"' \
-                --raw-output 2>&1)
-              echo "实例状态: $STATE"
-              if [ "$STATE" = "STOPPED" ]; then
-                break
-              fi
-              sleep 15
-            done
-          fi
-
-          echo "修改实例配置..."
-          UPDATE_RESULT=$(oci compute instance update \
-            --instance-id "$INSTANCE_ID" \
-            --shape-config "{\"ocpus\": ${NEXT_OCPUS}, \"memoryInGBs\": ${NEXT_MEMORY}}" \
-            --force \
-            2>&1)
-
-          UPDATED_STATE=$(echo "$UPDATE_RESULT" | jq -r '.data["lifecycle-state"] // empty' 2>/dev/null)
-          if [ -n "$UPDATED_STATE" ]; then
-            echo "扩容成功! 新配置: ${NEXT_OCPUS}C / ${NEXT_MEMORY}G"
-          else
-            echo "扩容失败:"
-            echo "$UPDATE_RESULT" | jq -r '.code // empty, .message // empty' 2>/dev/null || echo "$UPDATE_RESULT"
-          fi
-
-          echo "启动实例..."
-          oci compute instance action --instance-id "$INSTANCE_ID" --action START 2>&1
-          echo "=== 完成 ==="
+          echo "三个 AD 都失败，下次运行会重试。"
           exit 0
