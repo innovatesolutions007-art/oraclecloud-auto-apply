@@ -26,7 +26,7 @@ Oracle Cloud 免费套餐提供 4 OCPU / 24GB 内存的 ARM (Ampere A1) 实例�
 - 账号类型：Pay As You Go（升级后抢到概率更高）
 - 实例配置：VM.Standard.A1.Flex，4 OCPU，24GB 内存
 - 系统镜像：Canonical Ubuntu 22.04 Minimal aarch64
-- 抢到时间：注册当天
+- 抢到时间：注册当天（跑了1次拿到了3个VM.Standard.A1.Flex，4 OCPU，24GB, 然后我手动terminate了2个来符合免费的要求）
 
 ## 配置说明
 
