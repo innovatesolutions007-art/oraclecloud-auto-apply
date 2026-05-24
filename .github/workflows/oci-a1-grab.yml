@@ -2,7 +2,13 @@ name: OCI A1 Instance Auto Grab
 
 on:
   schedule:
-    # 美东时间凌晨 3:00-7:00  每30分钟
+    # 美东时间凌晨 12:00-7:00am  每30分钟
+    - cron: '0 4 * * *'
+    - cron: '30 4 * * *'
+    - cron: '0 5 * * *'
+    - cron: '30 5 * * *'
+    - cron: '0 6 * * *'
+    - cron: '30 6 * * *'
     - cron: '0 7 * * *'
     - cron: '30 7 * * *'
     - cron: '0 8 * * *'
@@ -110,7 +116,7 @@ jobs:
               --image-id "$OCI_IMAGE_ID" \
               --subnet-id "$OCI_SUBNET_ID" \
               --assign-public-ip true \
-              --metadata "{\"ssh_authorized_keys\": \"$OCI_SSH_PUBLIC_KEY\"}" \
+              --metadata "{\"ssh_authorized_keys\": \"$(echo $OCI_SSH_PUBLIC_KEY | tr -d '\n')\"}" \
               --display-name "A1-Auto-Grabbed" \
               2>&1)
 
