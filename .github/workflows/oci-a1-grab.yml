@@ -2,17 +2,17 @@ name: OCI A1 Instance Auto Grab
 
 on:
   schedule:
-    # 东京时间凌晨 2:00-6:00 (UTC 17:00-21:00) 每30分钟
-    - cron: '0 17 * * *'
-    - cron: '30 17 * * *'
-    - cron: '0 18 * * *'
-    - cron: '30 18 * * *'
-    - cron: '0 19 * * *'
-    - cron: '30 19 * * *'
-    - cron: '0 20 * * *'
-    - cron: '30 20 * * *'
-    - cron: '0 21 * * *'
-    - cron: '30 21 * * *'
+    # 美东时间凌晨 3:00-7:00  每30分钟
+    - cron: '0 7 * * *'
+    - cron: '30 7 * * *'
+    - cron: '0 8 * * *'
+    - cron: '30 8 * * *'
+    - cron: '0 9 * * *'
+    - cron: '30 9 * * *'
+    - cron: '0 10 * * *'
+    - cron: '30 10 * * *'
+    - cron: '0 11 * * *'
+    - cron: '30 11 * * *'
   workflow_dispatch:
 
 jobs:
